@@ -100,7 +100,10 @@ int main() {
     else {
         std::cout << "No viable wordle found\n";
     }
+
     std::string line;
+    std::cin.clear();
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     std::getline(std::cin, line);
 }
 
