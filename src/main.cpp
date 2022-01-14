@@ -11,6 +11,8 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <mutex>
+#include <functional>
 
 #include "common.h"
 
@@ -67,7 +69,18 @@ int main() {
     // std::cout << "...dictionary reduced to size " << target_dictionary.size() << "\n";
 
     while (target_dictionary.size() > 1) {
-        std::cout << "There are " << target_dictionary.size() << " possible words remaining.\n";
+        std::cout << "There are " << target_dictionary.size() << " possible words remaining:\n";
+        int i = 0;
+        for (auto it = target_dictionary.begin(); it != target_dictionary.end(); ++it, ++i) {
+            std::cout << it->word << ' ';
+            if (i == 12) {
+                std::cout << '\n';
+                i = 0;
+            }
+        }
+        if (i != 0) {
+            std::cout << '\n';
+        }
 
         std::cout << "Determining best greedy guess...\n";
         auto [next_guess, reduction] = greedy_guess(target_dictionary, guess_dictionary, info);
@@ -96,24 +109,54 @@ std::pair<std::string, int> greedy_guess(
 )
 {
     std::unordered_map<std::string, int> guess_scores;
+    for (const auto& guess : guess_dictionary) {
+        guess_scores[guess.word] = 0;
+    }
 
     // For each target word...
     for (const auto& target : target_dictionary) {
         std::cout << '.';
         // std::cout << "Running all guesses against target word [" << target.word << "]...\n";
-        for (const auto& guess : guess_dictionary) {
-            auto info = guess_a_word(target, guess);
 
-            for (const auto& t : target_dictionary) {
-                if (!test_a_word(t, info)) {
-                    guess_scores[guess.word]++;
+        std::mutex m;
+        auto it = guess_dictionary.begin();
+
+        std::function<void()> check_routine = [&](){
+            {
+                while (true) {
+                    wordle_club::WordleDictionary::const_iterator guess_it;
+
+                    {
+                        std::unique_lock<std::mutex> lock(m);
+                        if (it == guess_dictionary.end()) {
+                            return;
+                        }
+                        guess_it = it++;
+                    }
+
+                    auto info = guess_a_word(target, *guess_it);
+
+                    for (const auto& t : target_dictionary) {
+                        if (!test_a_word(t, info)) {
+                            guess_scores[guess_it->word]++;
+                        }
+                    }
                 }
             }
+        };
+
+        std::vector<std::thread> threads;
+        for (int i = 0; i < 8; ++i) {
+            threads.emplace_back(check_routine);
+        }
+
+        for (auto& t : threads) {
+            t.join();
         }
     }
 
     auto max_score_guess = std::max_element(guess_scores.begin(), guess_scores.end(), [](const auto& lhs, const auto& rhs) {
-        return lhs < rhs;
+        return lhs.second < rhs.second;
     });
 
     // std::cout << "Sorting results by best-first-guess...\n";

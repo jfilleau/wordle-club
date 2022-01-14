@@ -159,15 +159,7 @@ bool test_a_word(const EnrichedWord& target, const WordleInformation& test_info)
 void dictionary_reduce(WordleDictionary& dict, const WordleInformation& info) {
     dict.erase(
         std::remove_if(dict.begin(), dict.end(), [&](const EnrichedWord& word){
-            if (test_a_word(word, info)) {
-                std::cout << word.word << " is not removed\n";
-                return false;
-            }
-            else {
-                std::cout << word.word << " is removed\n";
-                return true;
-            }
-            // return !test_a_word(word, info);
+            return !test_a_word(word, info);
         }), dict.end()
     );
 }
