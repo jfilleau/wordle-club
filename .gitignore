@@ -1,5 +1,9 @@
+build/**
+Build/**
 Debug/**
+debug/**
 Release/**
+release/**
 .vscode/**
 .vs/**
 x64/**
