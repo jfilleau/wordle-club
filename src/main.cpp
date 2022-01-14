@@ -59,14 +59,14 @@ int main() {
     }
 
     WordleInformation info;
-    // std::cout << "Assuming first best guess is roate...\n";
-    // update_information(info, "roate");
+    std::cout << "Assuming first best guess is roate...\n";
+    update_information(info, "roate");
 
-    // std::cout << "total info: " << info << '\n';
+    std::cout << "total info: " << info << '\n';
 
-    // std::cout << "Reducing target dictionary based on updated info...\n";
-    // dictionary_reduce(target_dictionary, info);
-    // std::cout << "...dictionary reduced to size " << target_dictionary.size() << "\n";
+    std::cout << "Reducing target dictionary based on updated info...\n";
+    dictionary_reduce(target_dictionary, info);
+    std::cout << "...dictionary reduced to size " << target_dictionary.size() << "\n";
 
     while (target_dictionary.size() > 1) {
         std::cout << "There are " << target_dictionary.size() << " possible words remaining:\n";
