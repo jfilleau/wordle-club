@@ -100,8 +100,8 @@ int main() {
     else {
         std::cout << "No viable wordle found\n";
     }
-    char c;
-    std::cin >> c;
+    std::string line;
+    std::getline(std::cin, line);
 }
 
 std::pair<std::string, int> greedy_guess(
