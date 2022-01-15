@@ -13,6 +13,7 @@
 #include <string>
 #include <mutex>
 #include <functional>
+#include <iomanip>
 
 #include "common.h"
 
@@ -21,7 +22,7 @@ constexpr std::string_view guess_word_dictionary = "guesses.dict";
 
 using namespace wordle_club;
 
-std::pair<std::string, int> greedy_guess(
+std::vector<std::pair<std::string, double>> greedy_guess(
     const WordleDictionary& target_dictionary,
     const WordleDictionary& guess_dictionary,
     const WordleInformation& info
@@ -59,6 +60,7 @@ int main() {
     }
 
     WordleInformation info;
+    /*
     std::cout << "Assuming first best guess is roate...\n";
     update_information(info, "roate");
 
@@ -67,6 +69,7 @@ int main() {
     std::cout << "Reducing target dictionary based on updated info...\n";
     dictionary_reduce(target_dictionary, info);
     std::cout << "...dictionary reduced to size " << target_dictionary.size() << "\n";
+    */
 
     while (target_dictionary.size() > 1) {
         std::cout << "There are " << target_dictionary.size() << " possible words remaining:\n";
@@ -83,8 +86,30 @@ int main() {
         }
 
         std::cout << "Determining best greedy guess...\n";
-        auto [next_guess, reduction] = greedy_guess(target_dictionary, guess_dictionary, info);
-        std::cout << "...best guess is [" << next_guess << "], with reduction value of " << reduction << "\n.";
+        auto top_ten_guesses = greedy_guess(target_dictionary, guess_dictionary, info);
+        std::cout << "...best guesses are:\n";
+        {
+            int line = 0;
+            for (const auto& [g, v] : top_ten_guesses) {
+                std::cout << "[" << g << ":" << std::fixed << std::setprecision(3) << v << "]";
+                if (++line == 5) {
+                    line = 0;
+                    std::cout << '\n';
+                }
+            }
+            if (line != 0) {
+                std::cout << '\n';
+            }
+        }
+
+        std::string next_guess;
+        do {
+            std::cout << "Select guess: ";
+            std::getline(std::cin, next_guess);
+        } while (std::find_if(top_ten_guesses.begin(), top_ten_guesses.end(), [&](const auto& element) {
+            return element.first == next_guess;
+        }) == top_ten_guesses.end());
+
 
         update_information(info, next_guess);
         std::cout << "total info: " << info << '\n';
@@ -107,15 +132,15 @@ int main() {
     std::getline(std::cin, line);
 }
 
-std::pair<std::string, int> greedy_guess(
+std::vector<std::pair<std::string, double>> greedy_guess(
     const WordleDictionary& target_dictionary,
     const WordleDictionary& guess_dictionary,
     const WordleInformation& info
 )
 {
-    std::unordered_map<std::string, int> guess_scores;
+    std::unordered_map<std::string, double> guess_scores;
     for (const auto& guess : guess_dictionary) {
-        guess_scores[guess.word] = 0;
+        guess_scores[guess.word] = 0.0;
     }
 
     // For each target word...
@@ -140,12 +165,16 @@ std::pair<std::string, int> greedy_guess(
                     }
 
                     auto info = guess_a_word(target, *guess_it);
+                    int this_guess_score = 0;
 
                     for (const auto& t : target_dictionary) {
                         if (!test_a_word(t, info)) {
-                            guess_scores[guess_it->word]++;
+                            // guess_scores[guess_it->word]++;
+                            this_guess_score++;
                         }
                     }
+
+                    guess_scores[guess_it->word] += std::sqrt(this_guess_score);
                 }
             }
         };
@@ -160,9 +189,17 @@ std::pair<std::string, int> greedy_guess(
         }
     }
 
-    auto max_score_guess = std::max_element(guess_scores.begin(), guess_scores.end(), [](const auto& lhs, const auto& rhs) {
+    std::vector<std::pair<std::string, double>> top_ten_guesses;
+    top_ten_guesses.reserve(guess_scores.size());
+    std::move(guess_scores.begin(), guess_scores.end(), std::back_inserter(top_ten_guesses));
+
+    std::sort(top_ten_guesses.begin(), top_ten_guesses.end(), [](const auto& lhs, const auto& rhs) {
         return lhs.second < rhs.second;
     });
+
+    if (top_ten_guesses.size() > 10) {
+        top_ten_guesses.erase(top_ten_guesses.begin(), top_ten_guesses.begin() + top_ten_guesses.size() - 10);
+    }
 
     // std::cout << "Sorting results by best-first-guess...\n";
     // std::sort(guess_words.begin(), guess_words.end(), [](const auto& lhs, const auto& rhs) {
@@ -175,7 +212,7 @@ std::pair<std::string, int> greedy_guess(
     //     std::cout << guess.first.word << " eliminates on average " << static_cast<double>(guess.second) / target_words.size() << '\n';
     // }
 
-    return *max_score_guess;
+    return top_ten_guesses;
 }
 
 void update_information(WordleInformation& info, const std::string& guess) {
