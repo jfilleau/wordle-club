@@ -1,255 +1,206 @@
-#include <array>
-#include <fstream>
+/**
+ * (yet another) Wordle Solver
+ * John Filleau, 2022
+ * 
+ * Command Line Arguments:
+ * --wordles, -w: file that contains new-line separated wordles (possible answers)
+ * --guesses,  -g: file that contains new-line separated guesses (can be used as guesses, but will never be answers)
+ * --strategy,    -s: strategy used to score guesses, one of
+ *      bestcase: scores guesses based on their best possible bucket
+ *      worstcase: scores guesses based on their worst possible bucket
+ *      mean: scores guesses based on the mean of their buckets
+ *      smr: scores words based on the square-mean-root of their buckets (like mean, but favors smaller buckets) 
+**/ 
+
 #include <iostream>
-#include <map>
-#include <unordered_map>
-#include <numeric>
-#include <set>
-#include <string>
+#include <fstream>
+#include <string_view>
 #include <vector>
-#include <algorithm>
 #include <iomanip>
 
-enum class GuessFeedback {
-    black = 0,
-    yellow = 1,
-    green = 2,
+#include <argparse/argparse.hpp>
 
-    not_present = 0,
-    present_but_wrong_spot = 1,
-    present_and_correct_spot = 2,
+#include <wordle/solver.hpp>
+
+enum WordleValidity {
+    valid,
+    incorrect_length,
+    non_alpha_char,
 };
 
-using FeedbackArray = std::array<GuessFeedback, 5>;
+std::vector<wordle::Wordle> read_file(std::ifstream& file);
+argparse::ArgumentParser parse_args(int argc, const char* const argv[]);
+WordleValidity check_wordle_validity(const std::string& word);
+bool check_feedback_validity(const std::string& feedback);
 
-class Wordle {
-public:
-    friend class Filter;
+int main(int argc, const char* const argv[]) {
+    auto parser = parse_args(argc, argv);
 
-    Wordle(const std::string_view& word) noexcept
-    {
-        std::transform(word.begin(), word.end(), std::back_inserter(word_), [](const char c)->char { return c - 'a'; });
+    std::ifstream wordle_file(parser.get<const char*>("--wordles"));
+    if (!wordle_file) {
+        std::cerr << "Unable to open wordle file: " << parser.get<const char*>("--wordles") << std::endl;
+        std::cerr << parser;
+        std::exit(1);
     }
 
-    int count(char c) const {
-        return counts_[c - 'a'];
+    std::cout << "Reading wordles file...\n";
+    std::vector<wordle::Wordle> wordles = read_file(wordle_file);
+    std::cout << "...read " << wordles.size() << " words\n";
+
+    std::ifstream guess_file(parser.get<const char*>("--guesses"));
+    if (!guess_file) {
+        std::cerr << "Unable to open guess file: " << parser.get<const char*>("--guesses") << std::endl;
+        std::cerr << parser;
+        std::exit(1);
     }
 
-    const char& operator[](std::size_t index) const {
-        return word_[index] + 'a';
+    std::cout << "Reading guesses file...\n";
+    std::vector<wordle::Wordle> guesses = read_file(guess_file);
+    std::cout << "...read " << guesses.size() << " words\n";
+
+    wordle::Solver solver(std::move(wordles), std::move(guesses));
+    solver.on_progress([](int, int) {
+        std::cout << '.';
+    });
+
+    // wordle::Wordle 
+    if ( parser["--firstguess"] == false ) {
+        std::cout << "Solving first iteration...";
+        solver.solve();
+        std::cout << "\n\n";
+        auto best_guesses = solver.best_guesses(20);
+        std::cout << "Best guesses:\n";
+        for (const auto& best : best_guesses) {
+            std::cout << (best.is_possible_wordle ? '*' : ' ') << std::setw(6) << best.guess << std::setw(6) << best.score << '\n';
+        }
     }
 
-    friend std::ostream& operator<<(std::ostream& os, const Wordle& wordle);
+    while (solver.wordles().size() > 1) {
+        std::string guess;
+        do {
+            std::cout << "Enter guess: ";
+            std::getline(std::cin, guess);
+        } while (check_wordle_validity(guess) != WordleValidity::valid);
 
-private:
-    std::string word_{};
-    std::array<char, 26> counts_{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-};
+        std::string feedback;
+        do {
+            std::cout << "Enter feedback: ";
+            std::getline(std::cin, feedback);
+        } while ( ! check_feedback_validity(feedback));
 
-std::ostream& operator<<(std::ostream& os, const Wordle& wordle) {
-    for (const auto& c : wordle.word_) {
-        os << static_cast<char>(c + 'a');
+        wordle::Wordle w_guess(guess);
+        wordle::FeedbackArray w_feedback = wordle::to_feedback(feedback);
+
+        std::cout << "Reducing search space...\n";
+        solver.apply_guess(w_guess, w_feedback);
+        std::cout << "...search space reduced.\n";
+
+        std::cout << "Solving...\n";
+        solver.solve();
+        std::cout << "\n\n";
+
+        auto best_guesses = solver.best_guesses(20);
+        std::cout << "Best guesses:\n";
+        for (const auto& best : best_guesses) {
+            std::cout << (best.is_possible_wordle ? '*' : ' ') << std::setw(6) << best.guess << std::setw(6) << best.score << '\n';
+        }
+        best_guesses = solver.best_wordles(20);
+        std::cout << "Best wordles:\n";
+        for (const auto& best : best_guesses) {
+            std::cout << (best.is_possible_wordle ? '*' : ' ') << std::setw(6) << best.guess << std::setw(6) << best.score << '\n';
+        }
     }
-    return os;
+
+    std::string dummy;
+    std::getline(std::cin, dummy);
 }
 
-struct Filter {
-public:
-    // tags used to default create filters
-    struct accept_all{};
-    struct reject_all{};
+std::vector<wordle::Wordle> read_file(std::ifstream& file) {
+    std::vector<wordle::Wordle> wordles;
 
-    // template <typename InputIt>
-    // Filter(InputIt first, InputIt last) {
-    //     auto it = first;
-    //     while (it != last) {
-    //         _add_wordle(*it++);
-    //     }
-    // }
-
-    Filter(const accept_all&) noexcept
-        : possible_chars_{{
-            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}}}
-        , min_chars_{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-        , max_chars_{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5}
-    { }
-
-    Filter(const Wordle& wordle, const FeedbackArray& feedback)
-        : Filter(accept_all{})
-    {
-        for (int i = 0; i < wordle.word_.size(); ++i) {
-            const char& c = wordle.word_[i];
-            const auto& f = feedback[i];
-
-            switch (f) {
-                case GuessFeedback::not_present:
-                    max_chars_[c] = 0;
+    std::string line;
+    int line_number = 0;
+    while (++line_number, std::getline(file, line)) {
+        if (auto validity = check_wordle_validity(line); validity != WordleValidity::valid) {
+            std::stringstream ss;
+            ss << "bad input on line " << line_number << "; ";
+            switch (validity) {
+                case WordleValidity::incorrect_length:
+                    ss << "incorrect length";
                     break;
-                case GuessFeedback::present_but_wrong_spot:
-                    ++min_chars_[c];
-                    break;
-                case GuessFeedback::present_and_correct_spot:
-                    ++min_chars_[c];
+                case WordleValidity::non_alpha_char:
+                    ss << "not alpha/lower character";
                     break;
             }
+            throw std::runtime_error(ss.str());
         }
 
-        int confirmed_chars = std::accumulate(
-            min_each.begin(), min_each.end(), 0,
-            [](int count, const std::pair<char, int>& val) { return count + val.second; }
-        );
-
-        for (auto& [k, v] : min_each) {
-            if (max_each.count(k)) {
-                max_each[k] = v;
-            }
-        }
+        wordles.emplace_back(line);
     }
 
-    friend std::ostream& operator<<(std::ostream& os, const Filter& filter);
-
-private:
-    void _add_wordle(const Wordle& wordle) {
-        for (int i = 0; i < 5; ++i) {
-            const auto& c = wordle.word_[i];
-            possible_chars_[i][c] = true;
-        }
-        for (int i = 0; i < 26; ++i) {
-            min_chars_[i] = std::min(static_cast<const char>(min_chars_[i]), wordle.counts_[i]);
-            max_chars_[i] = std::max(static_cast<const char>(min_chars_[i]), wordle.counts_[i]);
-        }
-    }
-
-private:
-    std::array<std::array<bool, 26>, 5> possible_chars_{{
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-    }};
-    std::array<int, 26> min_chars_{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5};
-    std::array<int, 26> max_chars_{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-};
-
-std::ostream& operator<<(std::ostream& os, const Filter& filter) {
-    auto format_flags = os.flags();
-    os << std::right << std::setfill(' ');
-
-    os << "   ";
-    for (char c = 'a'; c <= 'z'; ++c) {
-        os << std::setw(2) << c;
-    }
-    os << '\n';
-
-    for (int i = 0; i < filter.possible_chars_.size(); ++i) {
-        const auto& row = filter.possible_chars_[i];
-        os << std::setw(3) << i;
-        for (const auto& cell : row) {
-            os << std::setw(2) << (cell ? 'o' : '.');
-        }
-        os << '\n';
-    }
-
-    os << std::setw(3) << "min";
-    for (const auto& cell : filter.min_chars_) {
-        os << std::setw(2) << static_cast<int>(cell);
-    }
-    os << '\n';
-
-    os << std::setw(3) << "max";
-    for (const auto& cell : filter.max_chars_) {
-        os << std::setw(2) << static_cast<int>(cell);
-    }
-    os << '\n';
-
-    os.flags(format_flags);
-    return os;
+    return wordles;
 }
 
-// class SearchSpace {
-// public:
-//     bool contains(const std::string_view& wordle) const {
-//         return std::binary_search(wordles_.begin(), wordles_.end(), std::string(wordle));
-//     }
-
-//     std::size_t size_if_reduced(const std::string_view& guess, const std::array<GuessInfo, 5>& info) const {
-
-//     }
-
-//     void reduce(const std::string_view& guess, const std::array<GuessInfo, 5>& info) {
-//         std::map<int, std::set<char>> possible_chars;
-//         std::map<char, int> min_each;
-//         std::map<char, int> max_each;
-
-//         for (int i = 0; i < guess.size(); ++i) {
-//             char c = guess[i];
-//             auto c_info = info[i];
-
-//             switch (c_info) {
-//                 case GuessInfo::not_present:
-//                     max_each[c] = 0;
-//                     possible_chars[i].erase(c);
-//                     break;
-//                 case GuessInfo::present_but_wrong_spot:
-//                     ++min_each[c];
-//                     possible_chars[i].erase(c);
-//                     break;
-//                 case GuessInfo::present_and_correct_spot:
-//                     ++min_each[c];
-//                     possible_chars[i] = std::set<char>{c};
-//                     break;
-//             }
-//         }
-
-//         int confirmed_chars = std::accumulate(
-//             min_each.begin(), min_each.end(), 0,
-//             [](int count, const std::pair<char, int>& val) { return count + val.second; }
-//         );
-
-//         for (auto& [k, v] : min_each) {
-//             if (max_each.count(k)) {
-//                 max_each[k] = v;
-//             }
-//         }
-
-//         // now, remove words that do not match
-//         const auto& cmin_each = min_each;
-//         const auto& cmax_each = max_each;
-//         const auto& cpossible_chars = possible_chars;
-//         wordles_.erase(std::remove_if(wordles_.begin(), wordles_.end(), [&](const std::string& wordle)->bool {
-//             for (const auto& [letter, min_count] : cmin_each) {
-
-//             }
-//         }), wordles_.end());
-//     }
-
-//     void add_wordle(const std::string_view& wordle) {
-//         wordles_.emplace_back(wordle);
-//         std::sort(wordles_.begin(), wordles_.end());
-//     }
-
-//     template <typename InputIt>
-//     void add_wordles(InputIt first, InputIt last) {
-//         wordles_.resize(wordles_.size() + std::distance(first, last));
-//         while (first != last) {
-//             wordles.emplace_back(*first++);
-//         }
-//         std::sort(wordles_.begin(), wordles_.end());
-//     }
-
-//     std::size_t size() const {
-//         return wordles_.size();
-//     }
-
-// private:
-//     std::vector<std::string> wordles_{};
-// };
-
-int main(int argc, char** argv) {
+argparse::ArgumentParser parse_args(int argc, const char* const argv[]) {
+    argparse::ArgumentParser parser("Wordle Solver", "0.0.1");
+    parser.add_argument("--wordles", "-w")
+        .nargs(1)
+        .default_value("wordles.txt")
+        .help("file that contains new-line separated wordles (possible answers)");
+    parser.add_argument("--guesses", "-g")
+        .nargs(1)
+        .default_value("guesses.txt")
+        .help("file that contains new-line separated guesses (can be used as guesses, but will never be answers)");
+    parser.add_argument("--strategy", "-s")
+        .nargs(1)
+        .default_value("worstcase")
+        .help("The selection strategy to use, one of <worstcase, bestcase, mean, sms>")
+        .action([&](const std::string& value) {
+            static const std::vector<std::string> choices = { "worstcase", "bestcase", "mean", "smr" };
+            if (std::find(choices.begin(), choices.end(), value) != choices.end()) {
+                return value;
+            }
+            std::cerr << parser;
+            std::exit(1);
+        });
+    parser.add_argument("--firstguess", "-f")
+        .implicit_value(true)
+        .default_value(false)
+        .help("specifies an initial first guess (skips the first solving step)");
     
+    try {
+        parser.parse_args(argc, argv);
+    }
+        catch (const std::runtime_error& err) {
+        std::cerr << err.what() << std::endl;
+        std::cerr << parser;
+        std::exit(1);
+    }
+
+    return parser;
+}
+
+WordleValidity check_wordle_validity(const std::string& word) {
+    if (word.size() != 5) {
+        return WordleValidity::incorrect_length;
+    }
+    for (const auto& c : word) {
+        if ( !std::islower(c) || !std::isalpha(c) ) {
+            return WordleValidity::non_alpha_char;
+        }
+    }
+
+    return WordleValidity::valid;
+}
+
+bool check_feedback_validity(const std::string& feedback) {
+    if (feedback.size() != 5) {
+        return false;
+    }
+    static constexpr std::string_view valid_chars = "BYG";
+    if (feedback.find_first_not_of(valid_chars) != std::string::npos) {
+        return false;
+    }
+
+    return true;
 }
