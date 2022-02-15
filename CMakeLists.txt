@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.21 FATAL_ERROR)
 project(wordleclub)
 
 add_library(wordlelib STATIC src/filter.cpp src/wordle.cpp src/filter.cpp src/solver.cpp)

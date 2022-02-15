@@ -1,5 +1,7 @@
 #include <wordle/wordle.hpp>
 
+#include <cctype>
+
 namespace wordle {
 
 Wordle::Wordle(const std::string_view& word) noexcept
